@@ -154,6 +154,26 @@ describe("Solid() — profile callback (verified WebID only, fail-closed)", () =
     expect(() => callProfile(p, { webid: "urn:not:a:webid" })).toThrow(/webid|fail-closed/i);
   });
 
+  it("prefers a valid `webid` claim over a URL-shaped `sub` (webid wins)", async () => {
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
+    const user = callProfile(p, { webid: WEBID, sub: "https://other.example/id" }) as {
+      id: string;
+    };
+    expect(user.id).toBe(WEBID);
+  });
+
+  it("falls back to `sub` when the `webid` claim is present but malformed (not an http(s) IRI)", async () => {
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
+    const user = callProfile(p, { webid: "not a uri", sub: WEBID }) as { id: string };
+    expect(user.id).toBe(WEBID);
+  });
+
+  it("FAILS CLOSED on a non-string webid claim (object/array injection)", async () => {
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
+    expect(() => callProfile(p, { webid: { href: WEBID } })).toThrow(/webid|fail-closed/i);
+    expect(() => callProfile(p, { webid: [WEBID] })).toThrow(/webid|fail-closed/i);
+  });
+
   it("does NOT trust a webid from a non-claim location (only the passed verified claims)", async () => {
     const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
     // The access token is NOT passed to profile()'s claim arg — only the verified ID-token claims.

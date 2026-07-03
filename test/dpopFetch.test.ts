@@ -218,6 +218,126 @@ describe("buildDpopCustomFetch — transport guard + asymmetric-only", () => {
   });
 });
 
+describe("buildDpopCustomFetch — §8 retry is HEADER-gated (characterization)", () => {
+  // These pin the retry decision rule: a retry happens ONLY when the challenge response carries a
+  // `DPoP-Nonce` HEADER (there is no nonce to retry with otherwise). A body-only
+  // `error: "use_dpop_nonce"` or an out-of-range status must NOT retry.
+
+  function tokenInit(): RequestInit {
+    return {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code" }),
+    };
+  }
+
+  it("does NOT retry a 400 whose body says use_dpop_nonce but has NO DPoP-Nonce header", async () => {
+    let calls = 0;
+    const underlying = vi.fn(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: "use_dpop_nonce" }), {
+        status: 400,
+        headers: { "content-type": "application/json" }, // no dpop-nonce header
+      });
+    });
+    const kp = await generateDpopKeyPair();
+    const cf = buildDpopCustomFetch(kp, underlying as never, false);
+    const res = await cf("https://op.example/token", tokenInit());
+    expect(res.status).toBe(400);
+    expect(calls).toBe(1); // no header nonce → nothing to retry with
+    // The response body is still readable by the caller (not consumed by challenge detection).
+    expect(((await res.json()) as { error: string }).error).toBe("use_dpop_nonce");
+  });
+
+  it("does NOT retry a 5xx even when it carries a DPoP-Nonce header", async () => {
+    let calls = 0;
+    const underlying = vi.fn(async () => {
+      calls += 1;
+      return new Response("", { status: 500, headers: { "dpop-nonce": "n" } });
+    });
+    const kp = await generateDpopKeyPair();
+    const cf = buildDpopCustomFetch(kp, underlying as never, false);
+    const res = await cf("https://op.example/token", tokenInit());
+    expect(res.status).toBe(500);
+    expect(calls).toBe(1);
+  });
+
+  it("does NOT retry a 2xx that carries a DPoP-Nonce header (success is returned as-is)", async () => {
+    let calls = 0;
+    const underlying = vi.fn(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ access_token: "x", token_type: "DPoP" }), {
+        status: 200,
+        headers: { "content-type": "application/json", "dpop-nonce": "fresh-nonce" },
+      });
+    });
+    const kp = await generateDpopKeyPair();
+    const cf = buildDpopCustomFetch(kp, underlying as never, false);
+    const res = await cf("https://op.example/token", tokenInit());
+    expect(res.status).toBe(200);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("solidDpopFetch — 401 retry is HEADER-gated (characterization)", () => {
+  async function stateFor() {
+    const kp = await generateDpopKeyPair();
+    const dpopKeyJwk = await exportJWK(kp.privateKey);
+    return { accessToken: "pod-at-char", dpopKeyJwk };
+  }
+
+  it("does NOT retry a 401 without a DPoP-Nonce header", async () => {
+    let calls = 0;
+    const underlying = vi.fn(async () => {
+      calls += 1;
+      return new Response("", { status: 401 });
+    });
+    const st = await stateFor();
+    const f = buildSolidDpopFetch(st, { fetch: underlying as never });
+    const res = await f(POD);
+    expect(res.status).toBe(401);
+    expect(calls).toBe(1);
+  });
+
+  it("does NOT retry a 403 even when it carries a DPoP-Nonce header (401-only)", async () => {
+    let calls = 0;
+    const underlying = vi.fn(async () => {
+      calls += 1;
+      return new Response("", { status: 403, headers: { "dpop-nonce": "n" } });
+    });
+    const st = await stateFor();
+    const f = buildSolidDpopFetch(st, { fetch: underlying as never });
+    const res = await f(POD);
+    expect(res.status).toBe(403);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("assertSecureTransport / header-override characterization", () => {
+  it("rejects non-http(s) schemes (file:, ftp:) even with allowInsecure", async () => {
+    const st = {
+      accessToken: "t",
+      dpopKeyJwk: await exportJWK((await generateDpopKeyPair()).privateKey),
+    };
+    const underlying = vi.fn(async () => new Response("{}", { status: 200 }));
+    const f = buildSolidDpopFetch(st, { fetch: underlying as never, allowInsecure: true });
+    await expect(f("file:///etc/passwd")).rejects.toThrow(/scheme|https/);
+    await expect(f("ftp://alice.example/x")).rejects.toThrow(/scheme|https/);
+    expect(underlying).not.toHaveBeenCalled();
+  });
+
+  it("a caller-supplied Authorization header CANNOT override the DPoP Authorization", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const kp = await generateDpopKeyPair();
+    const dpopKeyJwk = await exportJWK(kp.privateKey);
+    const accessToken = "the-real-token";
+    const f = buildSolidDpopFetch({ accessToken, dpopKeyJwk }, { fetch: op.fetch });
+    await f(POD, { headers: { authorization: "Bearer attacker-controlled" } });
+    const captured = op.captured.find((c) => c.url === POD);
+    expect(captured?.headers.authorization).toBe(`DPoP ${accessToken}`);
+  });
+});
+
 describe("solidDpopFetch — pod (resource) requests", () => {
   async function stateFor() {
     const kp = await generateDpopKeyPair();

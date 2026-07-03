@@ -10,9 +10,11 @@
  *   - `[customFetch]` — a DPoP-injecting fetch (see dpopFetch.ts), because `@auth/core` does NOT do
  *     DPoP itself and Solid-OIDC requires sender-constrained tokens (RFC 9449). Composes
  *     `@jeswr/solid-dpop` (ES256, asymmetric-only) for the proofs.
- *   - `profile` — maps the VERIFIED `webid` claim → the Auth.js user, FAIL-CLOSED (a login with no
- *     `webid` throws; the WebID is read from the ID-token-derived claims, never an unverified
- *     access token).
+ *   - `profile` — VERIFIES the ID token's JWS signature against the OP JWKS (neither
+ *     oauth4webapi's `processAuthorizationCodeResponse` nor `@auth/core` does this — see
+ *     idTokenVerify.ts), then maps the WebID from the signature-verified payload, FAIL-CLOSED (a
+ *     login whose ID token does not verify, or carries no `webid`, throws). The WebID is never
+ *     read from an unverified access token nor from a signature-unverified ID token.
  *   - `account` — keeps the token fields a Solid session needs (`access_token`, `refresh_token`,
  *     `id_token`, `expires_at`, `token_type`) surviving Auth.js's account-shaping.
  *
@@ -25,7 +27,8 @@
  * Security posture (this is an AUTH package — non-negotiable):
  *   - PKCE S256 + state + nonce ALWAYS (asserted on the returned config).
  *   - DPoP asymmetric-only (ES256) via `@jeswr/solid-dpop` — a symmetric/`none` alg is never used.
- *   - `webid` read fail-closed from the VERIFIED ID token; no session without a resolvable WebID.
+ *   - `webid` read fail-closed from a SIGNATURE-VERIFIED ID token (verified against the OP JWKS in
+ *     the `profile` callback); no session without a resolvable WebID.
  *   - https issuer/endpoints unless `allowInsecure` (the DPoP customFetch enforces transport).
  *   - No token / proof / key is ever logged.
  */
@@ -40,6 +43,7 @@ import {
 } from "@jeswr/solid-dpop";
 import type { JWK } from "jose";
 import { assertSecureTransport, buildDpopCustomFetch } from "./dpopFetch.js";
+import { verifyIdTokenSignature } from "./idTokenVerify.js";
 import type { FetchLike, SolidProfile, SolidProviderConfig } from "./types.js";
 
 /** Default scopes. `webid` is Solid-OIDC's WebID scope; `offline_access` yields a refresh token. */
@@ -74,17 +78,16 @@ function isHttpUri(value: string): boolean {
 }
 
 /**
- * Read the `webid` — Solid-OIDC's WebID — from the VERIFIED ID-token claims Auth.js passes to the
- * `profile` callback, FAIL-CLOSED.
+ * Read the `webid` — Solid-OIDC's WebID — from a SIGNATURE-VERIFIED ID-token payload, FAIL-CLOSED.
  *
- * SECURITY: Auth.js calls `profile(profile, tokens)` with `profile` = the VERIFIED ID-token claims
- * (oauth4webapi has already validated the ID token's signature against the OP JWKS + `iss` / `aud`
- * / `nonce`). We read the WebID ONLY from these verified claims — primary the `webid` claim, then a
- * `sub` that is itself an http(s) WebID. We do NOT trust any `webid` from the access token (a client
- * does not verify the access token's signature — that is the resource server's job). If no verified
- * http(s) WebID is present we THROW: a session is never created without one.
+ * SECURITY: the caller passes the payload returned by {@link verifyIdTokenSignature} (whose JWS
+ * signature has been checked against the OP JWKS, and whose `iss`/`aud` are validated). We read the
+ * WebID ONLY from that payload — primary the `webid` claim, then a `sub` that is itself an http(s)
+ * WebID. We do NOT trust any `webid` from the access token (a client does not verify the access
+ * token's signature — that is the resource server's job). If no valid http(s) WebID is present we
+ * THROW: a session is never created without one.
  */
-function extractVerifiedWebId(claims: Record<string, unknown>): string {
+export function extractVerifiedWebId(claims: Record<string, unknown>): string {
   const webidClaim = claims.webid;
   if (typeof webidClaim === "string" && isHttpUri(webidClaim)) {
     return webidClaim;
@@ -203,14 +206,34 @@ export async function Solid(config: SolidProviderConfig): Promise<SolidProvider>
       }
       return out;
     },
-    // Map the VERIFIED `webid` claim → the Auth.js user (fail-closed). `claims` is the verified
-    // ID-token claim set Auth.js passes here.
-    profile(claims) {
-      const record = claims as unknown as Record<string, unknown>;
-      const webid = extractVerifiedWebId(record);
-      const sub = record.sub;
-      const iss = record.iss;
-      const name = record.name;
+    // Map the WebID → the Auth.js user (fail-closed). SECURITY: `claims` is the claim set
+    // oauth4webapi validated for iss/aud/nonce/time but did NOT verify the SIGNATURE of (neither
+    // `processAuthorizationCodeResponse` nor `@auth/core` verifies the ID-token JWS — see
+    // idTokenVerify.ts). So we IGNORE `claims` for identity and instead verify the raw ID token's
+    // signature against the OP JWKS ourselves (via the same transport-guarded fetch), then read the
+    // WebID from the SIGNATURE-VERIFIED payload. Auth.js awaits this async callback.
+    async profile(claims, tokens) {
+      const idToken = (tokens as { id_token?: unknown } | undefined)?.id_token;
+      const verified = await verifyIdTokenSignature({
+        idToken,
+        issuer: config.issuer,
+        clientId: config.clientId,
+        fetch: dpopFetch as unknown as FetchLike,
+        allowInsecure,
+      });
+      // Defence in depth: the signature-verified claims must agree with the claims Auth.js already
+      // validated (iss/aud/nonce) — a divergence means two different tokens were in play.
+      const authjsClaims = claims as unknown as Record<string, unknown>;
+      if (typeof authjsClaims?.sub === "string" && verified.sub !== authjsClaims.sub) {
+        throw new Error(
+          "auth-solid: the signature-verified ID token's `sub` differs from the claims Auth.js " +
+            "validated; refusing to establish a session (fail-closed).",
+        );
+      }
+      const webid = extractVerifiedWebId(verified);
+      const sub = verified.sub;
+      const iss = verified.iss;
+      const name = verified.name;
       return {
         id: webid,
         webid,

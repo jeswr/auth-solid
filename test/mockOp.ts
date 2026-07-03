@@ -73,6 +73,17 @@ export interface MockOp {
     jws: string,
     expected: { htm: string; htu: string; requireAth?: boolean; nonce?: string },
   ): Promise<{ ok: boolean; reason?: string; jkt: string }>;
+  /** Mint an ID token signed with the OP's REAL key (verifies against the served JWKS). */
+  mintIdToken(overrides?: {
+    webId?: string | undefined;
+    issuer?: string;
+    audience?: string;
+  }): Promise<string>;
+  /**
+   * Mint an ID token signed with a DIFFERENT, UNPUBLISHED key (its `kid` is not in the served
+   * JWKS) — a valid JWS with correct claims but a signature that CANNOT verify against the OP JWKS.
+   */
+  mintIdTokenWrongKey(webId?: string): Promise<string>;
 }
 
 function decodeJwtPart(part: string): Record<string, unknown> {
@@ -340,6 +351,34 @@ export async function createMockOp(opts: MockOpOptions): Promise<MockOp> {
     },
     seenJtis: () => seenJtis,
     verifyDpopProof,
+    async mintIdToken(overrides) {
+      return new SignJWT({
+        ...(overrides?.webId !== undefined || opts.webId !== undefined
+          ? { webid: overrides?.webId ?? opts.webId }
+          : {}),
+      })
+        .setProtectedHeader({ alg: "ES256", kid: "op-key-1", typ: "JWT" })
+        .setSubject(overrides?.webId ?? opts.webId ?? "the-subject")
+        .setIssuer(overrides?.issuer ?? issuer)
+        .setAudience(overrides?.audience ?? opts.clientId)
+        .setIssuedAt()
+        .setExpirationTime("10m")
+        .sign(privateKey);
+    },
+    async mintIdTokenWrongKey(webId) {
+      // A fresh keypair whose kid is NOT in the served JWKS — a syntactically valid JWS with
+      // correct claims but an unverifiable signature.
+      const wrong = await generateKeyPair("ES256", { extractable: true });
+      const wid = webId ?? opts.webId;
+      return new SignJWT({ ...(wid !== undefined ? { webid: wid } : {}) })
+        .setProtectedHeader({ alg: "ES256", kid: "attacker-key", typ: "JWT" })
+        .setSubject(wid ?? "the-subject")
+        .setIssuer(issuer)
+        .setAudience(opts.clientId)
+        .setIssuedAt()
+        .setExpirationTime("10m")
+        .sign(wrong.privateKey);
+    },
   };
 }
 

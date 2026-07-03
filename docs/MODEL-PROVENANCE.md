@@ -14,6 +14,7 @@ Standing rule while Fable is unavailable: every artifact in this repo is authore
 |---|---|---|
 | `src/provider.ts` | `Solid(config)` factory → Auth.js `OIDCConfig<SolidProfile>` (checks/scope/profile/account/customFetch) | Opus 4.8 |
 | `src/dpopFetch.ts` | DPoP HTTP seam — token-leg customFetch + `solidDpopFetch` pod fetch, transport guards, §8 nonce retry | Opus 4.8 |
+| `src/idTokenVerify.ts` | explicit ID-token JWS signature verification against the OP JWKS (the HIGH roborev fix — the installed Auth.js/oauth4webapi flow does not verify it) | Fable 5 |
 | `src/session.ts` | jwt/session persistence helpers (`persistSolidTokensIntoJwt`, `extractSolidAuthState`) | Opus 4.8 |
 | `src/types.ts` | public types (`SolidProviderConfig`, `SolidProfile`, `SolidAuthState`, …) | Opus 4.8 |
 | `src/index.ts` | public API barrel | Opus 4.8 |

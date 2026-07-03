@@ -27,10 +27,11 @@ requests** from a persisted session.
   and attaches a DPoP proof **only to the token-endpoint leg** (a POST with a form-urlencoded grant
   body). The token-endpoint proof carries **no `ath`** (RFC 9449 §4.2 — there is no access token
   being *presented* yet). It handles the RFC 9449 §8 `use_dpop_nonce` retry **exactly once**.
-- **Verified-WebID-only, fail-closed.** The WebID is read **only** from the verified ID-token claims
-  Auth.js passes to `profile()` (oauth4webapi validates the ID token signature + `iss`/`aud`/`nonce`
-  first). A login with no resolvable `webid` **throws** — never a session without a verified WebID,
-  and never trusting a `webid` from the unverified access token.
+- **Verified-WebID-only, fail-closed.** The `profile()` callback **verifies the ID token's JWS
+  signature** against the OP JWKS + `iss`/`aud` (the installed Auth.js/oauth4webapi code flow does
+  NOT verify the signature itself — only the claims), then reads the WebID from the verified
+  payload. A login whose ID token does not verify, or has no resolvable `webid`, **throws** — never
+  a session without a signature-verified WebID, and never trusting a `webid` from the access token.
 - **DPoP key in the JWT — a documented tradeoff** (see [Security](#security)).
 
 ## Install
@@ -177,8 +178,15 @@ This is an auth package; the security posture is non-negotiable:
   generates and validates them; this package asserts they are set.
 - **DPoP is mandatory and asymmetric-only (ES256)** via `@jeswr/solid-dpop` — a symmetric (`HS*`) /
   `none` alg is never reachable. Every proof is single-use (a fresh `jti`).
-- **Verified-WebID-only, fail-closed.** The WebID is read from the verified ID token; a login with
-  no resolvable WebID throws. The WebID is never trusted from the unverified access token.
+- **Verified-WebID-only, fail-closed — with an EXPLICIT signature check.** Before any claim is
+  trusted, the `profile` callback verifies the ID token's **JWS signature** against the OP's
+  published JWKS (fetched through the same transport-guarded fetch) and its `iss`/`aud`, then reads
+  the WebID from the *signature-verified* payload. This is load-bearing: in the installed stack
+  neither oauth4webapi's `processAuthorizationCodeResponse` nor `@auth/core` verifies the ID-token
+  signature (only its claims), so without this check a signature-forged token with matching
+  `iss`/`aud`/`nonce` could forge the WebID. A symmetric (`HS*`) / `none` alg is rejected before any
+  JWKS fetch (algorithm-confusion guard); a login whose ID token does not verify, or carries no
+  resolvable WebID, throws. The WebID is never trusted from the access token.
 - **Transport guards — every leg.** The DPoP `customFetch` enforces https on EVERY request Auth.js
   routes through it (discovery, JWKS, token, userinfo), and `solidDpopFetch` on every pod request,
   unless `allowInsecure` permits a loopback host. This matters because `@auth/core` disables
@@ -205,13 +213,20 @@ handled *upstream* rather than in this package:
   OP advertises `authorization_response_iss_parameter_supported`; Auth.js additionally scopes each
   callback to a single provider (`/callback/:providerId`), so a code for one OP cannot be redeemed
   through another provider's config. Not re-implemented here.
-- **Token substitution / unverified claims:** the WebID is read ONLY from the ID-token claims that
-  oauth4webapi has already signature-verified against the OP JWKS (+ `iss`/`aud`/`nonce`), never
-  from the access token — and a login with no resolvable WebID throws (fail-closed).
-- **ID-token key substitution via plaintext JWKS:** the JWKS fetch inside
-  `processAuthorizationCodeResponse` does not flow through the provider `customFetch`, and there
-  oauth4webapi's default https enforcement applies (Auth.js passes it no
-  `allowInsecureRequests`) — blocked upstream.
+- **Token substitution / signature-unverified ID token:** handled HERE. In the installed stack
+  oauth4webapi's `validateJwt` (via `processGenericAccessTokenResponse`) checks the ID token's
+  `alg`/required-claim-presence/`iss`/`aud`/time but NOT the JWS signature — signature verification
+  lives only in oauth4webapi's separate `validateApplicationLevelSignature`, which `@auth/core`
+  never calls (verified in @auth/core 0.41 + oauth4webapi 3.x). OIDC Core §3.1.3.7 permits skipping
+  it in the code flow because the token arrives over the direct TLS back-channel — but this package
+  routes that back-channel through a consumer `customFetch` (with oauth4webapi's own https
+  enforcement disabled), so we do NOT rely on that assumption: the `profile` callback verifies the
+  ID-token signature against the OP JWKS + `iss`/`aud` and reads the WebID from the verified payload
+  (`src/idTokenVerify.ts`). The WebID is never trusted from the access token.
+- **ID-token key substitution via plaintext JWKS:** our JWKS fetch (for the signature check above)
+  goes through the transport-guarded fetch (https-only unless `allowInsecure` on loopback), and we
+  require the discovery doc's `issuer` to equal the configured issuer before trusting its
+  `jwks_uri` — so the signing key cannot be substituted over a plaintext or wrong-issuer JWKS.
 - **Plaintext endpoints from the discovery doc** (e.g. an `http:` `userinfo_endpoint` that would
   receive the access token): blocked HERE — the customFetch https-enforces every leg (see above).
 - **Redirect-following to plaintext** (an https endpoint 302-ing to `http:`): the per-leg guard sees
@@ -254,7 +269,7 @@ client (only surface the WebID on the `session`).
 ```
 sign-in:  browser → Auth.js (PKCE+state+nonce) → token endpoint
                                                    └─ customFetch attaches DPoP proof (no ath, §8 nonce retry)
-          → verified ID token → profile() reads `webid` (fail-closed) → user { id: webid }
+          → profile() VERIFIES the ID-token JWS signature vs OP JWKS → reads `webid` (fail-closed) → user { id: webid }
           → jwt callback persists { access/refresh/id tokens, expires_at, dpopKeyJwk } into the (encrypted) JWT
 
 pod call: extractSolidAuthState(jwt) → solidDpopFetch(state)

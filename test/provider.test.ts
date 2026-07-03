@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { customFetch } from "@auth/core";
 import { calculateJwkThumbprint } from "jose";
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SCOPE, SOLID_CHECKS, Solid } from "../src/provider.js";
+import { DEFAULT_SCOPE, extractVerifiedWebId, SOLID_CHECKS, Solid } from "../src/provider.js";
 import { createMockOp } from "./mockOp.js";
 
 const ISSUER = "https://op.example";
@@ -119,65 +119,144 @@ describe("Solid() — required-field + transport guards", () => {
   });
 });
 
-describe("Solid() — profile callback (verified WebID only, fail-closed)", () => {
-  function callProfile(p: Awaited<ReturnType<typeof Solid>>, claims: Record<string, unknown>) {
-    const profileFn = p.profile as (claims: unknown, tokens: unknown) => unknown;
-    return profileFn(claims, {});
+describe("extractVerifiedWebId — claim extraction from a signature-verified payload (fail-closed)", () => {
+  it("maps a `webid` claim → the WebID", () => {
+    expect(extractVerifiedWebId({ webid: WEBID, sub: "abc" })).toBe(WEBID);
+  });
+
+  it("falls back to a `sub` that is itself an http(s) WebID", () => {
+    expect(extractVerifiedWebId({ sub: WEBID })).toBe(WEBID);
+  });
+
+  it("FAILS CLOSED when no webid claim is present", () => {
+    expect(() => extractVerifiedWebId({ sub: "opaque-subject-not-a-url" })).toThrow(
+      /webid|fail-closed/i,
+    );
+  });
+
+  it("FAILS CLOSED on an empty webid claim", () => {
+    expect(() => extractVerifiedWebId({ webid: "" })).toThrow(/webid|fail-closed/i);
+  });
+
+  it("FAILS CLOSED on a non-http(s) webid claim", () => {
+    expect(() => extractVerifiedWebId({ webid: "urn:not:a:webid" })).toThrow(/webid|fail-closed/i);
+  });
+
+  it("prefers a valid `webid` claim over a URL-shaped `sub` (webid wins)", () => {
+    expect(extractVerifiedWebId({ webid: WEBID, sub: "https://other.example/id" })).toBe(WEBID);
+  });
+
+  it("falls back to `sub` when the `webid` claim is present but malformed (not an http(s) IRI)", () => {
+    expect(extractVerifiedWebId({ webid: "not a uri", sub: WEBID })).toBe(WEBID);
+  });
+
+  it("FAILS CLOSED on a non-string webid claim (object/array injection)", () => {
+    expect(() => extractVerifiedWebId({ webid: { href: WEBID } })).toThrow(/webid|fail-closed/i);
+    expect(() => extractVerifiedWebId({ webid: [WEBID] })).toThrow(/webid|fail-closed/i);
+  });
+
+  it("FAILS CLOSED on an empty claim set", () => {
+    expect(() => extractVerifiedWebId({})).toThrow(/webid|fail-closed/i);
+  });
+});
+
+describe("Solid() — profile callback VERIFIES the ID-token signature (fail-closed)", () => {
+  async function providerFor(op: Awaited<ReturnType<typeof createMockOp>>) {
+    return Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: op.fetch });
+  }
+  function profileOf(p: Awaited<ReturnType<typeof Solid>>) {
+    return p.profile as (claims: unknown, tokens: unknown) => Promise<{ id: string; webid: string }>;
   }
 
-  it("maps a `webid` claim → id + webid", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    const user = callProfile(p, { webid: WEBID, sub: "abc" }) as { id: string; webid: string };
+  it("ACCEPTS a correctly-signed ID token and extracts the WebID from the verified payload", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const idToken = await op.mintIdToken();
+    // The signature-unverified claims arg is IGNORED for identity; the verified payload wins.
+    const user = await profileOf(p)({ sub: WEBID }, { id_token: idToken });
     expect(user.id).toBe(WEBID);
     expect(user.webid).toBe(WEBID);
   });
 
-  it("falls back to a `sub` that is itself an http(s) WebID", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    const user = callProfile(p, { sub: WEBID }) as { id: string; webid: string };
-    expect(user.id).toBe(WEBID);
-    expect(user.webid).toBe(WEBID);
+  it("REJECTS an ID token signed with the WRONG key (not in the OP JWKS)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const forged = await op.mintIdTokenWrongKey(WEBID);
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: forged })).rejects.toThrow(
+      /signature verification failed|fail-closed/i,
+    );
   });
 
-  it("FAILS CLOSED when no webid claim is present", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    expect(() => callProfile(p, { sub: "opaque-subject-not-a-url" })).toThrow(/webid|fail-closed/i);
+  it("REJECTS a tampered ID token (payload changed after signing)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const idToken = await op.mintIdToken();
+    // Swap the payload segment for a forged one claiming a different WebID; signature now invalid.
+    const [h, , s] = idToken.split(".");
+    const forgedPayload = Buffer.from(
+      JSON.stringify({
+        webid: "https://attacker.example/profile#me",
+        sub: "https://attacker.example/profile#me",
+        iss: ISSUER,
+        aud: CLIENT_ID,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 600,
+      }),
+    ).toString("base64url");
+    const tampered = `${h}.${forgedPayload}.${s}`;
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: tampered })).rejects.toThrow(
+      /signature verification failed|fail-closed/i,
+    );
   });
 
-  it("FAILS CLOSED on an empty webid claim", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    expect(() => callProfile(p, { webid: "" })).toThrow(/webid|fail-closed/i);
+  it("REJECTS an HS256 (symmetric) ID token BEFORE any JWKS fetch (algorithm-confusion guard)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const { SignJWT } = await import("jose");
+    const hs = await new SignJWT({ webid: WEBID, sub: WEBID })
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setIssuer(ISSUER)
+      .setAudience(CLIENT_ID)
+      .setIssuedAt()
+      .setExpirationTime("10m")
+      .sign(new TextEncoder().encode("a-shared-secret-the-attacker-controls"));
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: hs })).rejects.toThrow(
+      /non-asymmetric|asymmetric|fail-closed/i,
+    );
   });
 
-  it("FAILS CLOSED on a non-http(s) webid claim", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    expect(() => callProfile(p, { webid: "urn:not:a:webid" })).toThrow(/webid|fail-closed/i);
+  it("REJECTS when no id_token is present in the token set (fail-closed)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    await expect(profileOf(p)({ sub: WEBID }, {})).rejects.toThrow(/id_token|fail-closed/i);
   });
 
-  it("prefers a valid `webid` claim over a URL-shaped `sub` (webid wins)", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    const user = callProfile(p, { webid: WEBID, sub: "https://other.example/id" }) as {
-      id: string;
-    };
-    expect(user.id).toBe(WEBID);
+  it("REJECTS an ID token with a mismatched audience (not our clientId)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const idToken = await op.mintIdToken({ audience: "https://someone-else.example/client" });
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: idToken })).rejects.toThrow(
+      /signature verification failed|fail-closed/i,
+    );
   });
 
-  it("falls back to `sub` when the `webid` claim is present but malformed (not an http(s) IRI)", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    const user = callProfile(p, { webid: "not a uri", sub: WEBID }) as { id: string };
-    expect(user.id).toBe(WEBID);
+  it("REJECTS an ID token whose issuer differs from the configured issuer", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const idToken = await op.mintIdToken({ issuer: "https://evil-op.example" });
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: idToken })).rejects.toThrow(
+      /signature verification failed|issuer|fail-closed/i,
+    );
   });
 
-  it("FAILS CLOSED on a non-string webid claim (object/array injection)", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    expect(() => callProfile(p, { webid: { href: WEBID } })).toThrow(/webid|fail-closed/i);
-    expect(() => callProfile(p, { webid: [WEBID] })).toThrow(/webid|fail-closed/i);
-  });
-
-  it("does NOT trust a webid from a non-claim location (only the passed verified claims)", async () => {
-    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID });
-    // The access token is NOT passed to profile()'s claim arg — only the verified ID-token claims.
-    expect(() => callProfile(p, {})).toThrow(/webid|fail-closed/i);
+  it("REJECTS when the signature-verified `sub` diverges from the Auth.js-validated claims", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const idToken = await op.mintIdToken(); // sub = WEBID
+    // Auth.js-validated claims arg claims a DIFFERENT sub → divergence must fail closed.
+    await expect(
+      profileOf(p)({ sub: "https://mismatch.example/id" }, { id_token: idToken }),
+    ).rejects.toThrow(/differs|fail-closed/i);
   });
 });
 

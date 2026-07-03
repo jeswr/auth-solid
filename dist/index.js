@@ -387,6 +387,82 @@ var DPOP_NONCE_RETRY_LIMIT = NONCE_RETRY_LIMIT;
 
 // src/provider.ts
 import { customFetch } from "@auth/core";
+
+// src/idTokenVerify.ts
+import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
+function trimTrailingSlash(s) {
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+async function verifyIdTokenSignature(params) {
+  const { idToken, issuer, clientId, fetch, allowInsecure } = params;
+  if (typeof idToken !== "string" || idToken.length === 0) {
+    throw new Error(
+      "auth-solid: the token response carried no `id_token`; refusing to establish a session without a signature-verifiable ID token (fail-closed)."
+    );
+  }
+  let alg;
+  try {
+    alg = decodeProtectedHeader(idToken).alg ?? "";
+  } catch {
+    throw new Error("auth-solid: the ID token header is not a valid JWS (fail-closed).");
+  }
+  if (alg === "" || alg.toUpperCase().startsWith("HS") || alg.toLowerCase() === "none") {
+    throw new Error(
+      `auth-solid: the ID token uses a non-asymmetric signature alg "${alg}"; only asymmetric algorithms are accepted (fail-closed).`
+    );
+  }
+  const base = trimTrailingSlash(issuer);
+  const discoveryUrl2 = `${base}/.well-known/openid-configuration`;
+  assertSecureTransport(
+    discoveryUrl2,
+    allowInsecure,
+    (msg) => new Error(`auth-solid ID-token verify: discovery ${msg}`)
+  );
+  const discoveryRes = await fetch(discoveryUrl2);
+  if (!discoveryRes.ok) {
+    throw new Error(
+      `auth-solid: could not fetch the OP discovery document (${discoveryRes.status}) to verify the ID-token signature (fail-closed).`
+    );
+  }
+  const discovery = await discoveryRes.json();
+  if (discovery.issuer !== issuer) {
+    throw new Error(
+      "auth-solid: the OP discovery document `issuer` does not match the configured issuer (fail-closed)."
+    );
+  }
+  const jwksUri = discovery.jwks_uri;
+  if (typeof jwksUri !== "string" || jwksUri.length === 0) {
+    throw new Error("auth-solid: the OP discovery document has no `jwks_uri` (fail-closed).");
+  }
+  assertSecureTransport(
+    jwksUri,
+    allowInsecure,
+    (msg) => new Error(`auth-solid ID-token verify: jwks_uri ${msg}`)
+  );
+  const jwksRes = await fetch(jwksUri);
+  if (!jwksRes.ok) {
+    throw new Error(
+      `auth-solid: could not fetch the OP JWKS (${jwksRes.status}) to verify the ID-token signature (fail-closed).`
+    );
+  }
+  const jwks = await jwksRes.json();
+  if (!Array.isArray(jwks.keys) || jwks.keys.length === 0) {
+    throw new Error("auth-solid: the OP JWKS contains no keys (fail-closed).");
+  }
+  const keySet = createLocalJWKSet({ keys: jwks.keys });
+  try {
+    const { payload } = await jwtVerify(idToken, keySet, {
+      issuer,
+      audience: clientId
+    });
+    return payload;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`auth-solid: ID-token signature verification failed (${reason}) (fail-closed).`);
+  }
+}
+
+// src/provider.ts
 var DEFAULT_SCOPE2 = "openid webid offline_access";
 var SOLID_CHECKS = ["pkce", "state", "nonce"];
 function normalizeScope(scope) {
@@ -474,14 +550,31 @@ async function Solid(config) {
       }
       return out;
     },
-    // Map the VERIFIED `webid` claim → the Auth.js user (fail-closed). `claims` is the verified
-    // ID-token claim set Auth.js passes here.
-    profile(claims) {
-      const record = claims;
-      const webid = extractVerifiedWebId(record);
-      const sub = record.sub;
-      const iss = record.iss;
-      const name = record.name;
+    // Map the WebID → the Auth.js user (fail-closed). SECURITY: `claims` is the claim set
+    // oauth4webapi validated for iss/aud/nonce/time but did NOT verify the SIGNATURE of (neither
+    // `processAuthorizationCodeResponse` nor `@auth/core` verifies the ID-token JWS — see
+    // idTokenVerify.ts). So we IGNORE `claims` for identity and instead verify the raw ID token's
+    // signature against the OP JWKS ourselves (via the same transport-guarded fetch), then read the
+    // WebID from the SIGNATURE-VERIFIED payload. Auth.js awaits this async callback.
+    async profile(claims, tokens) {
+      const idToken = tokens?.id_token;
+      const verified = await verifyIdTokenSignature({
+        idToken,
+        issuer: config.issuer,
+        clientId: config.clientId,
+        fetch: dpopFetch,
+        allowInsecure
+      });
+      const authjsClaims = claims;
+      if (typeof authjsClaims?.sub === "string" && verified.sub !== authjsClaims.sub) {
+        throw new Error(
+          "auth-solid: the signature-verified ID token's `sub` differs from the claims Auth.js validated; refusing to establish a session (fail-closed)."
+        );
+      }
+      const webid = extractVerifiedWebId(verified);
+      const sub = verified.sub;
+      const iss = verified.iss;
+      const name = verified.name;
       return {
         id: webid,
         webid,

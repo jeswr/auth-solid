@@ -89,6 +89,14 @@ export interface SolidProviderConfig {
      * URL it is asked to hit (so a DPoP proof / token is never sent over plaintext).
      */
     readonly allowInsecure?: boolean;
+    /**
+     * The underlying `fetch` the DPoP `customFetch` routes ALL Auth.js OAuth HTTP through
+     * (discovery, JWKS, token, userinfo). Defaults to `globalThis.fetch` (captured when `Solid()` is
+     * called). Inject an SSRF-/redirect-guarded fetch (e.g. `@jeswr/guarded-fetch`) or a test fetch
+     * here — the transport guard (https-only unless `allowInsecure` on loopback) still applies on
+     * top of whatever is injected.
+     */
+    readonly fetch?: FetchLike;
     /** Override the provider `id` (default `"solid"`). */
     readonly id?: string;
     /** Override the provider display `name` (default `"Solid"`). */

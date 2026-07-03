@@ -430,7 +430,7 @@ async function Solid(config) {
   assertSecureTransport(config.issuer, allowInsecure, (msg) => new Error(`Solid(): issuer ${msg}`));
   const scope = normalizeScope(config.scope);
   const dpopKeyPair = config.dpopKeyJwk ? await importDpopKeyPairJwk(config.dpopKeyJwk) : await generateDpopKeyPair();
-  const underlying = globalThis.fetch;
+  const underlying = config.fetch ?? globalThis.fetch;
   const dpopFetch = buildDpopCustomFetch(dpopKeyPair, underlying, allowInsecure);
   const hasSecret = typeof config.clientSecret === "string" && config.clientSecret.length > 0;
   const provider = {

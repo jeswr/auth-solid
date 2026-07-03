@@ -152,8 +152,10 @@ export async function Solid(config: SolidProviderConfig): Promise<SolidProvider>
     : await generateDpopKeyPair();
 
   // The base fetch Auth.js will route discovery / token / userinfo through. The DPoP customFetch
-  // wraps it, injecting a proof ONLY on the token-endpoint leg.
-  const underlying: FetchLike = globalThis.fetch as FetchLike;
+  // wraps it, injecting a proof ONLY on the token-endpoint leg. An injected `config.fetch` (an
+  // SSRF-/redirect-guarded or test fetch) is used when supplied; the customFetch's transport guard
+  // applies regardless.
+  const underlying: FetchLike = config.fetch ?? (globalThis.fetch as FetchLike);
   const dpopFetch = buildDpopCustomFetch(dpopKeyPair, underlying, allowInsecure);
 
   const hasSecret = typeof config.clientSecret === "string" && config.clientSecret.length > 0;

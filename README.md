@@ -151,6 +151,7 @@ const res = await fetch("https://alice.example/private/notes.ttl");
 | `scope` | no | `openid webid offline_access` | `openid` is forced on; de-duplicated. |
 | `dpopKeyJwk` | no | a fresh ES256 key | Restore a private JWK so the refresh `jkt` survives a restart (usually persisted via the `jwt` callback instead). |
 | `allowInsecure` | no | `false` | Permit `http:` issuer/endpoints on **loopback** only (local-dev OP). |
+| `fetch` | no | `globalThis.fetch` | The underlying fetch ALL Auth.js OAuth HTTP (discovery/JWKS/token/userinfo) is routed through — inject an SSRF-/redirect-guarded fetch (e.g. `@jeswr/guarded-fetch`) or a test fetch. The https-only transport guard applies on top. |
 | `id` / `name` | no | `"solid"` / `"Solid"` | Provider id / display name overrides. |
 
 ### Module augmentation (optional)

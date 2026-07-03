@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { customFetch } from "@auth/core";
 import { calculateJwkThumbprint } from "jose";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SCOPE, SOLID_CHECKS, Solid } from "../src/provider.js";
 import { createMockOp } from "./mockOp.js";
 
@@ -269,6 +269,39 @@ describe("Solid() — token exchange end-to-end through the customFetch", () => 
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+});
+
+describe("Solid() — injectable underlying fetch (config.fetch seam)", () => {
+  it("routes the token exchange through an injected fetch WITHOUT patching globalThis.fetch", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const realFetch = globalThis.fetch;
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: op.fetch });
+    // The global was never touched.
+    expect(globalThis.fetch).toBe(realFetch);
+    const cf = p[customFetch] as (url: string, init?: RequestInit) => Promise<Response>;
+    const res = await cf(op.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: "c",
+        code_verifier: "v",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const headerJkt = await calculateJwkThumbprint(op.lastTokenDpop()?.header.jwk as never);
+    expect(headerJkt).toBe(p.dpopKeyPair.thumbprint);
+  });
+
+  it("the transport guard still applies ON TOP of an injected fetch", async () => {
+    const injected = vi.fn(async () => new Response("{}", { status: 200 }));
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: injected as never });
+    const cf = p[customFetch] as (url: string, init?: RequestInit) => Promise<Response>;
+    await expect(cf("http://op.example/jwks", { method: "GET" })).rejects.toThrow(
+      /plaintext|insecure http/,
+    );
+    expect(injected).not.toHaveBeenCalled();
   });
 });
 

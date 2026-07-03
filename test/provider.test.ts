@@ -165,7 +165,10 @@ describe("Solid() — profile callback VERIFIES the ID-token signature (fail-clo
     return Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: op.fetch });
   }
   function profileOf(p: Awaited<ReturnType<typeof Solid>>) {
-    return p.profile as (claims: unknown, tokens: unknown) => Promise<{ id: string; webid: string }>;
+    return p.profile as (
+      claims: unknown,
+      tokens: unknown,
+    ) => Promise<{ id: string; webid: string }>;
   }
 
   it("ACCEPTS a correctly-signed ID token and extracts the WebID from the verified payload", async () => {

@@ -458,7 +458,9 @@ async function verifyIdTokenSignature(params) {
     return payload;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`auth-solid: ID-token signature verification failed (${reason}) (fail-closed).`);
+    throw new Error(
+      `auth-solid: ID-token signature verification failed (${reason}) (fail-closed).`
+    );
   }
 }
 

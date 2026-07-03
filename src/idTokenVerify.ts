@@ -142,6 +142,8 @@ export async function verifyIdTokenSignature(
     // Do NOT include the token in the message (no secret leak). Surface only that verification
     // failed — the caller fails closed.
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`auth-solid: ID-token signature verification failed (${reason}) (fail-closed).`);
+    throw new Error(
+      `auth-solid: ID-token signature verification failed (${reason}) (fail-closed).`,
+    );
   }
 }

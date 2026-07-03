@@ -171,27 +171,21 @@ function isTokenEndpointLeg(input: URL | RequestInfo, init: RequestInit | undefi
   return ct?.toLowerCase().includes("application/x-www-form-urlencoded") === true;
 }
 
-/** True iff a 4xx response is the RFC 9449 §8 `use_dpop_nonce` challenge (header or body error). */
-async function isUseDpopNonceChallenge(res: Response): Promise<boolean> {
+/**
+ * The RFC 9449 §8 `use_dpop_nonce` challenge nonce from a 4xx token-endpoint response, or
+ * `undefined` when the response is not an actionable challenge.
+ *
+ * The retry decision is HEADER-gated on purpose: a retry needs a fresh nonce, and RFC 9449 §8
+ * delivers it ONLY in the `DPoP-Nonce` header — a body `error: "use_dpop_nonce"` WITHOUT that
+ * header supplies nothing to retry with (an earlier revision also parsed the body, but a body-only
+ * signal could never lead to a retry and the unbounded body read was wasted work — behavior pinned
+ * by the characterization tests).
+ */
+function useDpopNonceChallengeNonce(res: Response): string | undefined {
   if (res.status < 400 || res.status >= 500) {
-    return false;
+    return undefined;
   }
-  // The canonical signal is a `DPoP-Nonce` header. RFC 9449 §8 also defines an
-  // `error":"use_dpop_nonce"` body for the token endpoint; treat either as the challenge.
-  if (res.headers.get("dpop-nonce")) {
-    return true;
-  }
-  try {
-    const cloned = res.clone();
-    const text = await cloned.text();
-    if (text.length === 0) {
-      return false;
-    }
-    const parsed = JSON.parse(text) as { error?: unknown };
-    return parsed.error === "use_dpop_nonce";
-  } catch {
-    return false;
-  }
+  return res.headers.get("dpop-nonce") ?? undefined;
 }
 
 /**
@@ -273,14 +267,12 @@ export function buildDpopCustomFetch(
     };
 
     const res = await send();
-    if (await isUseDpopNonceChallenge(res)) {
-      const serverNonce = res.headers.get("dpop-nonce");
-      if (serverNonce) {
-        // Drain the challenge body before retrying (release resources; we discard it). Best-effort.
-        await res.body?.cancel().catch(() => {});
-        // Retry exactly once with the supplied nonce (NONCE_RETRY_LIMIT === 1) — no loop.
-        return send(serverNonce);
-      }
+    const serverNonce = useDpopNonceChallengeNonce(res);
+    if (serverNonce !== undefined) {
+      // Drain the challenge body before retrying (release resources; we discard it). Best-effort.
+      await res.body?.cancel().catch(() => {});
+      // Retry exactly once with the supplied nonce (NONCE_RETRY_LIMIT === 1) — no loop.
+      return send(serverNonce);
     }
     return res;
   };

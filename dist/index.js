@@ -164,24 +164,11 @@ function isTokenEndpointLeg(input, init) {
   const ct = effectiveContentType(input, init);
   return ct?.toLowerCase().includes("application/x-www-form-urlencoded") === true;
 }
-async function isUseDpopNonceChallenge(res) {
+function useDpopNonceChallengeNonce(res) {
   if (res.status < 400 || res.status >= 500) {
-    return false;
+    return void 0;
   }
-  if (res.headers.get("dpop-nonce")) {
-    return true;
-  }
-  try {
-    const cloned = res.clone();
-    const text = await cloned.text();
-    if (text.length === 0) {
-      return false;
-    }
-    const parsed = JSON.parse(text);
-    return parsed.error === "use_dpop_nonce";
-  } catch {
-    return false;
-  }
+  return res.headers.get("dpop-nonce") ?? void 0;
 }
 function buildDpopCustomFetch(keyPair, underlying, allowInsecure) {
   const dpopFetch = async (input, init) => {
@@ -218,13 +205,11 @@ function buildDpopCustomFetch(keyPair, underlying, allowInsecure) {
       });
     };
     const res = await send();
-    if (await isUseDpopNonceChallenge(res)) {
-      const serverNonce = res.headers.get("dpop-nonce");
-      if (serverNonce) {
-        await res.body?.cancel().catch(() => {
-        });
-        return send(serverNonce);
-      }
+    const serverNonce = useDpopNonceChallengeNonce(res);
+    if (serverNonce !== void 0) {
+      await res.body?.cancel().catch(() => {
+      });
+      return send(serverNonce);
     }
     return res;
   };

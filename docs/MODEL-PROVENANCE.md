@@ -19,3 +19,12 @@ Standing rule while Fable is unavailable: every artifact in this repo is authore
 | `src/index.ts` | public API barrel | Opus 4.8 |
 | `test/*.test.ts`, `test/mockOp.ts` | vitest suite + faithful Map-backed mock OP (real DPoP-proof verification) | Opus 4.8 |
 | `scripts/*.mjs` | build-dist (esbuild, inline solid-dpop) / check-dist-fresh / check-lockfile-transport | Opus 4.8 |
+
+### 2026-07-03 — Fable 5 security review + maintainer-readiness pass
+
+The `sec-review/maintainer-readiness` pass (characterization tests, the every-leg customFetch
+transport guard, the token-leg Request-body carry, the header-gated §8 challenge simplification,
+the `config.fetch` seam, the api-extractor snapshot (`etc/auth-solid.api.md` + `api:check` in the
+gate), the README attack-surface notes, and the `npm ci` lockfile repair) is authored by
+**Claude Fable 5** (`Model: claude-fable-5` trailers) — the Opus-4.8 re-review this ledger
+anticipated, applied to the security-critical flow.

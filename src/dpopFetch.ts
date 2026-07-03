@@ -21,9 +21,12 @@
  *      `Authorization: DPoP <token>` + `DPoP: <proof>`, and handles the resource-server §8
  *      `DPoP-Nonce` (401) retry once.
  *
- * Transport guard (both paths): never attach a DPoP proof / access token to a plaintext `http:`
- * URL unless `allowInsecure` is set for a loopback host — so a token is never sent over the wire in
- * the clear. We never log tokens, proofs, keys, or request bodies.
+ * Transport guard (both paths): the customFetch enforces https on EVERY leg it carries (discovery,
+ * JWKS, token, userinfo — @auth/core disables oauth4webapi's own https enforcement whenever a
+ * `[customFetch]` is present, so this is the only transport guard in the flow), and the pod fetch
+ * enforces it per request — unless `allowInsecure` is set for a loopback host. So neither a token,
+ * a code, nor a DPoP proof is ever sent over the wire in the clear. We never log tokens, proofs,
+ * keys, or request bodies.
  */
 
 import { createDpopProof, type DpopKeyPair, importDpopKeyPairJwk } from "@jeswr/solid-dpop";
@@ -205,20 +208,25 @@ export function buildDpopCustomFetch(
   allowInsecure: boolean,
 ): typeof fetch {
   const dpopFetch = async (input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
+    const url = effectiveUrl(input);
+    // SECURITY: enforce https on EVERY leg Auth.js routes through this customFetch — discovery,
+    // JWKS, token AND userinfo — not just the token leg. @auth/core sets oauth4webapi's
+    // `allowInsecureRequests: true` UNCONDITIONALLY whenever a provider `[customFetch]` is present
+    // (verified against @auth/core 0.41: discovery, authorizationCodeGrantRequest and
+    // userInfoRequest all pass it), so THIS guard is the only transport enforcement in the whole
+    // Auth.js flow. An `http:` endpoint published in the (https-fetched) discovery document — e.g.
+    // a userinfo_endpoint that would receive the access token, or a token_endpoint receiving the
+    // code + PKCE verifier — must never be hit over plaintext.
+    assertSecureTransport(
+      url,
+      allowInsecure,
+      (msg) => new Error(`auth-solid customFetch: ${msg} — refusing the request over plaintext.`),
+    );
+
     // Non-token legs (discovery / JWKS / userinfo): pass straight through, no DPoP.
     if (!isTokenEndpointLeg(input, init)) {
       return underlying(input as string | URL | Request, init);
     }
-
-    const url = effectiveUrl(input);
-    // SECURITY: never send a DPoP-bound token request over plaintext (it carries the client
-    // credential / code). Enforce transport BEFORE minting any proof.
-    assertSecureTransport(
-      url,
-      allowInsecure,
-      (msg) =>
-        new Error(`auth-solid customFetch: ${msg} — refusing the token request over plaintext.`),
-    );
 
     const method = "POST";
 

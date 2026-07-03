@@ -185,15 +185,15 @@ async function isUseDpopNonceChallenge(res) {
 }
 function buildDpopCustomFetch(keyPair, underlying, allowInsecure) {
   const dpopFetch = async (input, init) => {
-    if (!isTokenEndpointLeg(input, init)) {
-      return underlying(input, init);
-    }
     const url = effectiveUrl(input);
     assertSecureTransport(
       url,
       allowInsecure,
-      (msg) => new Error(`auth-solid customFetch: ${msg} \u2014 refusing the token request over plaintext.`)
+      (msg) => new Error(`auth-solid customFetch: ${msg} \u2014 refusing the request over plaintext.`)
     );
+    if (!isTokenEndpointLeg(input, init)) {
+      return underlying(input, init);
+    }
     const method = "POST";
     const send = async (nonce) => {
       const proof = await createDpopProof(

@@ -179,6 +179,50 @@ describe("buildDpopCustomFetch — transport guard + asymmetric-only", () => {
     expect(underlying).not.toHaveBeenCalled();
   });
 
+  it("rejects an http: NON-TOKEN leg (discovery/JWKS/userinfo) — every customFetch leg is https-enforced", async () => {
+    // @auth/core sets oauth4webapi's allowInsecureRequests: true whenever a [customFetch] is
+    // present, so THIS customFetch is the only transport guard for discovery/JWKS/userinfo too.
+    // An http: userinfo_endpoint from the discovery doc would receive the ACCESS TOKEN in clear.
+    const kp = await generateDpopKeyPair();
+    const underlying = vi.fn(async () => new Response("{}", { status: 200 }));
+    const cf = buildDpopCustomFetch(kp, underlying as never, false);
+    await expect(
+      cf("http://op.example/.well-known/openid-configuration", { method: "GET" }),
+    ).rejects.toThrow(/plaintext|insecure http/);
+    await expect(cf("http://op.example/jwks", { method: "GET" })).rejects.toThrow(
+      /plaintext|insecure http/,
+    );
+    await expect(
+      cf("http://op.example/userinfo", {
+        method: "GET",
+        headers: { authorization: "DPoP secret-token" },
+      }),
+    ).rejects.toThrow(/plaintext|insecure http/);
+    expect(underlying).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-http(s) scheme on a non-token leg", async () => {
+    const kp = await generateDpopKeyPair();
+    const underlying = vi.fn(async () => new Response("{}", { status: 200 }));
+    const cf = buildDpopCustomFetch(kp, underlying as never, true);
+    await expect(cf("file:///etc/passwd", { method: "GET" })).rejects.toThrow(/scheme|https/);
+    expect(underlying).not.toHaveBeenCalled();
+  });
+
+  it("allows an http: loopback NON-TOKEN leg when allowInsecure is true (dev OP discovery)", async () => {
+    const op = await createMockOp({
+      issuer: "http://localhost:9999",
+      clientId: CLIENT_ID,
+      webId: WEBID,
+    });
+    const kp = await generateDpopKeyPair();
+    const cf = buildDpopCustomFetch(kp, op.fetch, true);
+    const res = await cf("http://localhost:9999/.well-known/openid-configuration", {
+      method: "GET",
+    });
+    expect(res.status).toBe(200);
+  });
+
   it("allows an http: loopback token endpoint when allowInsecure is true", async () => {
     const op = await createMockOp({
       issuer: "http://localhost:9999",

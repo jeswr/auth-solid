@@ -195,20 +195,27 @@ function buildDpopCustomFetch(keyPair, underlying, allowInsecure) {
       return underlying(input, init);
     }
     const method = "POST";
+    const reqInput = typeof input !== "string" && !(input instanceof URL) ? input : void 0;
+    const body = init && "body" in init ? init.body ?? void 0 : reqInput && reqInput.body !== null ? await reqInput.clone().arrayBuffer() : void 0;
     const send = async (nonce) => {
       const proof = await createDpopProof(
         nonce === void 0 ? { keyPair, htm: method, htu: url } : { keyPair, htm: method, htu: url, nonce }
       );
       const headers = new Headers(init?.headers ?? void 0);
-      if (typeof input !== "string" && !(input instanceof URL)) {
-        input.headers.forEach((v, k) => {
+      if (reqInput) {
+        reqInput.headers.forEach((v, k) => {
           if (!headers.has(k)) {
             headers.set(k, v);
           }
         });
       }
       headers.set("dpop", proof);
-      return underlying(url, { ...init ?? {}, method, headers });
+      return underlying(url, {
+        ...init ?? {},
+        method,
+        headers,
+        ...body !== void 0 ? { body } : {}
+      });
     };
     const res = await send();
     if (await isUseDpopNonceChallenge(res)) {

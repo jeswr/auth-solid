@@ -163,6 +163,27 @@ describe("buildDpopCustomFetch — §8 nonce retry", () => {
   });
 });
 
+describe("buildDpopCustomFetch — Request-shaped token call (regression)", () => {
+  it("carries and REPLAYS a Request's body across the §8 nonce retry (never silently dropped)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const kp = await generateDpopKeyPair();
+    const cf = buildDpopCustomFetch(kp, op.fetch, false);
+    const grant = "grant_type=authorization_code&code=c&code_verifier=v";
+    const req = new Request(op.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: grant,
+    });
+    const res = await cf(req);
+    expect(res.status).toBe(200);
+    // §8 flow: both the initial attempt and the nonce retry carried the grant body.
+    const tokenCalls = op.captured.filter((c) => c.url === op.tokenEndpoint);
+    expect(tokenCalls.length).toBe(2);
+    expect(tokenCalls[0]?.body).toBe(grant);
+    expect(tokenCalls[1]?.body).toBe(grant);
+  });
+});
+
 describe("buildDpopCustomFetch — transport guard + asymmetric-only", () => {
   it("rejects an http: token endpoint when allowInsecure is false (token never sent in clear)", async () => {
     const kp = await generateDpopKeyPair();

@@ -230,6 +230,20 @@ export function buildDpopCustomFetch(
 
     const method = "POST";
 
+    // BODY: oauth4webapi (via @auth/core) always calls the token leg as (urlString, init-with-body,
+    // a replayable URLSearchParams/string). Handle a Request-shaped call defensively too: a
+    // `Request`'s body is a stream that the init-based send below would otherwise SILENTLY DROP —
+    // buffer it once so both the original attempt and the §8 nonce retry carry it. (Token bodies
+    // are small grant forms; a ReadableStream in `init.body` is not a shape oauth4webapi produces
+    // and is not buffered here — the pod path in buildSolidDpopFetch owns that machinery.)
+    const reqInput = typeof input !== "string" && !(input instanceof URL) ? input : undefined;
+    const body: BodyInit | undefined =
+      init && "body" in init
+        ? (init.body ?? undefined)
+        : reqInput && reqInput.body !== null
+          ? await reqInput.clone().arrayBuffer()
+          : undefined;
+
     // The token-endpoint proof carries NO `ath` (RFC 9449 §4.2 — there is no access token being
     // presented yet). A fresh `jti` per proof (solid-dpop) makes it single-use.
     const send = async (nonce?: string): Promise<Response> => {
@@ -240,17 +254,22 @@ export function buildDpopCustomFetch(
       );
       const headers = new Headers(init?.headers ?? undefined);
       // If `input` is a Request, carry its headers too (init overrides).
-      if (typeof input !== "string" && !(input instanceof URL)) {
-        input.headers.forEach((v, k) => {
+      if (reqInput) {
+        reqInput.headers.forEach((v, k) => {
           if (!headers.has(k)) {
             headers.set(k, v);
           }
         });
       }
       headers.set("dpop", proof);
-      // oauth4webapi sends the body in `init.body` (a URLSearchParams string) — a small, replayable
-      // value, so the §8 retry can resend it as-is. We forward `init` unchanged but with our headers.
-      return underlying(url, { ...(init ?? {}), method, headers });
+      // The body is the replayable value computed above (init.body as-is, or the buffered Request
+      // body), so the §8 retry can resend it identically.
+      return underlying(url, {
+        ...(init ?? {}),
+        method,
+        headers,
+        ...(body !== undefined ? { body } : {}),
+      });
     };
 
     const res = await send();

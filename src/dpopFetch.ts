@@ -191,10 +191,10 @@ function useDpopNonceChallengeNonce(res: Response): string | undefined {
 /**
  * Build the Auth.js `[customFetch]` that injects a DPoP proof on the token-endpoint leg only.
  *
- * @param keyPair       the DPoP keypair the tokens are (will be) bound to.
- * @param underlying    the base fetch Auth.js passes its requests to (the global `fetch`, or an
- *                      injected SSRF-guarded / test fetch).
- * @param allowInsecure permit http: on loopback (dev OP). Default false (https-only).
+ * @param keyPair - the DPoP keypair the tokens are (will be) bound to.
+ * @param underlying - the base fetch Auth.js passes its requests to (the global `fetch`, or an
+ *   injected SSRF-guarded / test fetch).
+ * @param allowInsecure - permit http: on loopback (dev OP). Default false (https-only).
  */
 export function buildDpopCustomFetch(
   keyPair: DpopKeyPair,

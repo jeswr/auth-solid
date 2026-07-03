@@ -57,7 +57,7 @@ export interface SolidAuthState {
 }
 
 /**
- * Options for the {@link import("./provider.js").Solid} provider factory.
+ * Options for the `Solid()` provider factory (see `provider.ts`).
  *
  * `issuer` + `clientId` are required. A PUBLIC Solid client (a Client Identifier Document) has NO
  * secret — omit `clientSecret`. A confidential / statically-registered client supplies one.

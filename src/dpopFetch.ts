@@ -180,12 +180,17 @@ function isTokenEndpointLeg(input: URL | RequestInfo, init: RequestInit | undefi
  * header supplies nothing to retry with (an earlier revision also parsed the body, but a body-only
  * signal could never lead to a retry and the unbounded body read was wasted work — behavior pinned
  * by the characterization tests).
+ *
+ * An EMPTY `DPoP-Nonce` header value is treated as no nonce (returns `undefined`): retrying with
+ * `nonce: ""` would be a spurious second token request (and would cancel the original body) that
+ * cannot possibly satisfy the server's challenge — RFC 9449 §8 nonces are non-empty.
  */
 function useDpopNonceChallengeNonce(res: Response): string | undefined {
   if (res.status < 400 || res.status >= 500) {
     return undefined;
   }
-  return res.headers.get("dpop-nonce") ?? undefined;
+  const nonce = res.headers.get("dpop-nonce");
+  return nonce ? nonce : undefined;
 }
 
 /**

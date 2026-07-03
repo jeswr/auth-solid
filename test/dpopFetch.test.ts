@@ -327,6 +327,24 @@ describe("buildDpopCustomFetch — §8 retry is HEADER-gated (characterization)"
     expect(calls).toBe(1);
   });
 
+  it("does NOT retry a 400 with an EMPTY DPoP-Nonce header (no spurious 2nd token request)", async () => {
+    // An empty nonce cannot satisfy the challenge; retrying with nonce:"" would be a wasted
+    // second request that also cancels the original body. Must return the original response.
+    let calls = 0;
+    const underlying = vi.fn(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: "use_dpop_nonce" }), {
+        status: 400,
+        headers: { "content-type": "application/json", "dpop-nonce": "" },
+      });
+    });
+    const kp = await generateDpopKeyPair();
+    const cf = buildDpopCustomFetch(kp, underlying as never, false);
+    const res = await cf("https://op.example/token", tokenInit());
+    expect(res.status).toBe(400);
+    expect(calls).toBe(1);
+  });
+
   it("does NOT retry a 2xx that carries a DPoP-Nonce header (success is returned as-is)", async () => {
     let calls = 0;
     const underlying = vi.fn(async () => {

@@ -168,7 +168,8 @@ function useDpopNonceChallengeNonce(res) {
   if (res.status < 400 || res.status >= 500) {
     return void 0;
   }
-  return res.headers.get("dpop-nonce") ?? void 0;
+  const nonce = res.headers.get("dpop-nonce");
+  return nonce ? nonce : void 0;
 }
 function buildDpopCustomFetch(keyPair, underlying, allowInsecure) {
   const dpopFetch = async (input, init) => {

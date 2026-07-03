@@ -179,8 +179,11 @@ This is an auth package; the security posture is non-negotiable:
   `none` alg is never reachable. Every proof is single-use (a fresh `jti`).
 - **Verified-WebID-only, fail-closed.** The WebID is read from the verified ID token; a login with
   no resolvable WebID throws. The WebID is never trusted from the unverified access token.
-- **Transport guards.** The DPoP `customFetch` and `solidDpopFetch` reject `http:` URLs (so the
-  token/proof is never sent in the clear) unless `allowInsecure` permits a loopback host.
+- **Transport guards — every leg.** The DPoP `customFetch` enforces https on EVERY request Auth.js
+  routes through it (discovery, JWKS, token, userinfo), and `solidDpopFetch` on every pod request,
+  unless `allowInsecure` permits a loopback host. This matters because `@auth/core` disables
+  oauth4webapi's own https enforcement (`allowInsecureRequests: true`) whenever a provider
+  `[customFetch]` is present — this package's guard is the only transport enforcement in the flow.
 - **§8 nonce retry capped at exactly one** — no retry loop, for both the token endpoint and the
   resource server.
 - **Bounded, abort-cancellable replay buffering.** A `Request`/stream pod body is buffered once so
@@ -188,6 +191,46 @@ This is an auth package; the security posture is non-negotiable:
   rejected, not buffered) and cancelled promptly on the request's `AbortSignal`, so a large or
   untrusted upload cannot exhaust memory.
 - **No token / proof / key / request body is ever logged**, and none appears in any thrown error.
+
+### Attack-surface notes (reviewed; where each defence lives)
+
+Adversarial review of the full flow — what defends against each class, and why some classes are
+handled *upstream* rather than in this package:
+
+- **Tampered/forged `state` (CSRF), `nonce` replay, PKCE downgrade:** enforced by Auth.js +
+  oauth4webapi (`checks: ["pkce","state","nonce"]` — Auth.js binds them to per-request cookies and
+  consumes them once; oauth4webapi validates the ID-token `nonce` against the expected value). This
+  package's job is to make those checks non-optional, which the provider config does.
+- **Mix-up attacks (RFC 9207):** oauth4webapi validates the authorization response's `iss` when the
+  OP advertises `authorization_response_iss_parameter_supported`; Auth.js additionally scopes each
+  callback to a single provider (`/callback/:providerId`), so a code for one OP cannot be redeemed
+  through another provider's config. Not re-implemented here.
+- **Token substitution / unverified claims:** the WebID is read ONLY from the ID-token claims that
+  oauth4webapi has already signature-verified against the OP JWKS (+ `iss`/`aud`/`nonce`), never
+  from the access token — and a login with no resolvable WebID throws (fail-closed).
+- **ID-token key substitution via plaintext JWKS:** the JWKS fetch inside
+  `processAuthorizationCodeResponse` does not flow through the provider `customFetch`, and there
+  oauth4webapi's default https enforcement applies (Auth.js passes it no
+  `allowInsecureRequests`) — blocked upstream.
+- **Plaintext endpoints from the discovery doc** (e.g. an `http:` `userinfo_endpoint` that would
+  receive the access token): blocked HERE — the customFetch https-enforces every leg (see above).
+- **Redirect-following to plaintext** (an https endpoint 302-ing to `http:`): the per-leg guard sees
+  only the initial URL; redirects are followed inside the underlying fetch. Residual — mitigate by
+  injecting a redirect-guarded fetch via `Solid({ fetch })` / `solidDpopFetch(state, { fetch })`.
+- **`redirect_uri` confusion:** the `redirect_uri` is Auth.js's own callback URL and the OP
+  validates it against the client registration (the Client Identifier Document's
+  `redirect_uris`) — OP-side by design.
+- **DPoP proof replay:** every proof carries a fresh `jti` (single-use) and is `htm`/`htu`-bound;
+  pod proofs are additionally `ath`-bound to the access token. Replay *detection* is the resource
+  server's job (RFC 9449 §11.1).
+- **DPoP→Bearer downgrade by the OP:** `persistSolidTokensIntoJwt` refuses to persist a token whose
+  `token_type` is not `DPoP` (fail-closed).
+- **`allowInsecure` scope:** even when enabled, `http:` is accepted for loopback hosts only, and
+  non-http(s) schemes are always rejected. Dev-only; a hostile resolver rebinding `localhost` is
+  outside the dev-flag's threat model.
+- **Expiry/refresh:** ID-token `iat`/`exp` are validated upstream; this package does not itself
+  refresh tokens — `SolidJwtState.refreshToken` + `expiresAt` are persisted so a consumer's `jwt`
+  callback can drive a refresh grant (a packaged refresh helper is tracked as follow-up work).
 
 ### The DPoP-key-in-JWT tradeoff (read this)
 

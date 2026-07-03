@@ -252,6 +252,70 @@ describe("Solid() — profile callback VERIFIES the ID-token signature (fail-clo
     );
   });
 
+  it("REJECTS a discovery endpoint that 302-redirects (no metadata parsed over a redirect)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    // A fetch that answers the discovery URL with a 302 (to http: or anywhere) but is otherwise op.
+    const redirecting = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/.well-known/openid-configuration")) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://evil.example/openid-configuration" },
+        });
+      }
+      return op.fetch(input, init);
+    }) as typeof op.fetch;
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: redirecting });
+    const idToken = await op.mintIdToken();
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: idToken })).rejects.toThrow(
+      /redirect|fail-closed/i,
+    );
+  });
+
+  it("REJECTS a JWKS endpoint that 302-redirects (no key substituted over a redirect)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const redirecting = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/jwks")) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://evil.example/jwks" },
+        });
+      }
+      return op.fetch(input, init);
+    }) as typeof op.fetch;
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: redirecting });
+    const idToken = await op.mintIdToken();
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: idToken })).rejects.toThrow(
+      /redirect|fail-closed/i,
+    );
+  });
+
+  it("REJECTS an opaque-redirect (status 0) JWKS response (runtime redirect:manual form)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    // Modern runtimes return an opaque-redirect filtered response under redirect:"manual"
+    // (type "opaqueredirect", status 0). new Response() cannot build that, so simulate it.
+    const redirecting = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/jwks")) {
+        return { type: "opaqueredirect", status: 0, ok: false } as unknown as Response;
+      }
+      return op.fetch(input, init);
+    }) as typeof op.fetch;
+    const p = await Solid({ issuer: ISSUER, clientId: CLIENT_ID, fetch: redirecting });
+    const idToken = await op.mintIdToken();
+    await expect(profileOf(p)({ sub: WEBID }, { id_token: idToken })).rejects.toThrow(
+      /redirect|fail-closed/i,
+    );
+  });
+
+  it("STILL verifies a normal, non-redirecting flow (redirect refusal composes with the happy path)", async () => {
+    const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
+    const p = await providerFor(op);
+    const user = await profileOf(p)({ sub: WEBID }, { id_token: await op.mintIdToken() });
+    expect(user.webid).toBe(WEBID);
+  });
+
   it("REJECTS when the signature-verified `sub` diverges from the Auth.js-validated claims", async () => {
     const op = await createMockOp({ issuer: ISSUER, clientId: CLIENT_ID, webId: WEBID });
     const p = await providerFor(op);

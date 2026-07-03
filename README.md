@@ -223,10 +223,14 @@ handled *upstream* rather than in this package:
   enforcement disabled), so we do NOT rely on that assumption: the `profile` callback verifies the
   ID-token signature against the OP JWKS + `iss`/`aud` and reads the WebID from the verified payload
   (`src/idTokenVerify.ts`). The WebID is never trusted from the access token.
-- **ID-token key substitution via plaintext JWKS:** our JWKS fetch (for the signature check above)
-  goes through the transport-guarded fetch (https-only unless `allowInsecure` on loopback), and we
+- **ID-token key substitution via plaintext JWKS:** our discovery + JWKS fetches (for the signature
+  check above) go through the transport-guarded fetch (https-only unless `allowInsecure` on
+  loopback) AND are fetched with `redirect: "manual"` refusing any 3xx / opaque-redirect
+  (`src/idTokenVerify.ts` `fetchNoRedirect`) — so an `https:` metadata endpoint that 302s to `http:`
+  or a foreign origin cannot slip an unguarded final URL past the transport guard. We additionally
   require the discovery doc's `issuer` to equal the configured issuer before trusting its
-  `jwks_uri` — so the signing key cannot be substituted over a plaintext or wrong-issuer JWKS.
+  `jwks_uri`. So the signing key cannot be substituted over a plaintext, redirected, or
+  wrong-issuer JWKS.
 - **Plaintext endpoints from the discovery doc** (e.g. an `http:` `userinfo_endpoint` that would
   receive the access token): blocked HERE — the customFetch https-enforces every leg (see above).
 - **Redirect-following to plaintext** (an https endpoint 302-ing to `http:`): the per-leg guard sees

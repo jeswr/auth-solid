@@ -393,6 +393,15 @@ import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
 function trimTrailingSlash(s) {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
+async function fetchNoRedirect(fetch, url, label) {
+  const res = await fetch(url, { redirect: "manual" });
+  if (res.type === "opaqueredirect" || res.status === 0 || res.status >= 300 && res.status < 400) {
+    throw new Error(
+      `auth-solid: the OP ${label} endpoint returned a redirect (status ${res.status}, type ${res.type}); refusing to follow it \u2014 ${label} MUST be served directly over https so the verification key cannot be substituted over a redirect (fail-closed).`
+    );
+  }
+  return res;
+}
 async function verifyIdTokenSignature(params) {
   const { idToken, issuer, clientId, fetch, allowInsecure } = params;
   if (typeof idToken !== "string" || idToken.length === 0) {
@@ -418,7 +427,7 @@ async function verifyIdTokenSignature(params) {
     allowInsecure,
     (msg) => new Error(`auth-solid ID-token verify: discovery ${msg}`)
   );
-  const discoveryRes = await fetch(discoveryUrl2);
+  const discoveryRes = await fetchNoRedirect(fetch, discoveryUrl2, "discovery");
   if (!discoveryRes.ok) {
     throw new Error(
       `auth-solid: could not fetch the OP discovery document (${discoveryRes.status}) to verify the ID-token signature (fail-closed).`
@@ -439,7 +448,7 @@ async function verifyIdTokenSignature(params) {
     allowInsecure,
     (msg) => new Error(`auth-solid ID-token verify: jwks_uri ${msg}`)
   );
-  const jwksRes = await fetch(jwksUri);
+  const jwksRes = await fetchNoRedirect(fetch, jwksUri, "JWKS");
   if (!jwksRes.ok) {
     throw new Error(
       `auth-solid: could not fetch the OP JWKS (${jwksRes.status}) to verify the ID-token signature (fail-closed).`

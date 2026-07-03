@@ -34,6 +34,35 @@ function trimTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
+/**
+ * Fetch a security-sensitive metadata URL (discovery / JWKS) REFUSING to follow any redirect.
+ *
+ * WHY: the `assertSecureTransport` guard only sees the INITIAL URL. With default redirect handling
+ * an `https:` metadata endpoint that 302s to `http:` (or to an attacker origin) would be followed
+ * INSIDE `fetch`, and the parsed metadata / JWKS would come from that unguarded final URL —
+ * defeating the whole point of verifying the ID-token signature against a TRUSTWORTHY JWKS (a
+ * plaintext/cross-origin key substitution). So we force `redirect: "manual"` and reject any
+ * redirect: depending on the runtime that surfaces as an opaque-redirect filtered response
+ * (`type === "opaqueredirect"`, `status === 0`) or as a raw 3xx status — we reject all of them,
+ * fail-closed. This layers ON TOP of the https-only transport guard (asserted by the caller before
+ * this runs), it does not replace it.
+ */
+async function fetchNoRedirect(fetch: FetchLike, url: string, label: string): Promise<Response> {
+  const res = await fetch(url, { redirect: "manual" });
+  if (
+    res.type === "opaqueredirect" ||
+    res.status === 0 ||
+    (res.status >= 300 && res.status < 400)
+  ) {
+    throw new Error(
+      `auth-solid: the OP ${label} endpoint returned a redirect (status ${res.status}, type ` +
+        `${res.type}); refusing to follow it — ${label} MUST be served directly over https so the ` +
+        "verification key cannot be substituted over a redirect (fail-closed).",
+    );
+  }
+  return res;
+}
+
 /** Inputs to {@link verifyIdTokenSignature}. */
 export interface VerifyIdTokenParams {
   /** The raw ID token (a compact JWS) from the token response. */
@@ -93,7 +122,7 @@ export async function verifyIdTokenSignature(
     (msg) => new Error(`auth-solid ID-token verify: discovery ${msg}`),
   );
 
-  const discoveryRes = await fetch(discoveryUrl);
+  const discoveryRes = await fetchNoRedirect(fetch, discoveryUrl, "discovery");
   if (!discoveryRes.ok) {
     throw new Error(
       `auth-solid: could not fetch the OP discovery document (${discoveryRes.status}) to verify ` +
@@ -119,7 +148,7 @@ export async function verifyIdTokenSignature(
     (msg) => new Error(`auth-solid ID-token verify: jwks_uri ${msg}`),
   );
 
-  const jwksRes = await fetch(jwksUri);
+  const jwksRes = await fetchNoRedirect(fetch, jwksUri, "JWKS");
   if (!jwksRes.ok) {
     throw new Error(
       `auth-solid: could not fetch the OP JWKS (${jwksRes.status}) to verify the ID-token ` +
